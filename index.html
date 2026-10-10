@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Dial — focus timer and task list</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@400;600;800&display=swap">
+<style>
+:root{--bg:#dde8e1;--panel:#eef4f0;--ink:#1c2b2a;--muted:#5d726e;--accent:#f2b705;--accent-ink:#1c2b2a;--line:#b9cbc2;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#13201f;--panel:#1b2c2a;--ink:#e6f0ea;--muted:#8fa7a1;--line:#2c4340}}
+:root[data-theme="dark"]{--bg:#13201f;--panel:#1b2c2a;--ink:#e6f0ea;--muted:#8fa7a1;--line:#2c4340}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:"Bricolage Grotesque",system-ui,sans-serif;line-height:1.5}
+main{max-width:880px;margin:0 auto;padding:28px 18px 48px;display:grid;gap:22px;grid-template-columns:1fr}
+@media(min-width:800px){main{grid-template-columns:380px 1fr;align-items:start}}
+h1{font-size:1.6rem;font-weight:800;margin:0 0 4px;letter-spacing:-.02em}
+.sub{color:var(--muted);margin:0 0 18px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:22px;padding:22px}
+.modes{display:flex;gap:6px;margin-bottom:18px}
+.modes button{flex:1;padding:8px 6px;border-radius:999px;border:1px solid var(--line);background:transparent;color:var(--ink);font:inherit;cursor:pointer}
+.modes button[aria-pressed=true]{background:var(--ink);color:var(--panel);border-color:var(--ink)}
+.dial{position:relative;width:100%;max-width:300px;margin:0 auto}
+.dial svg{display:block;width:100%;height:auto}
+.dial .time{position:absolute;inset:0;display:grid;place-content:center;text-align:center}
+.time b{font-size:3.4rem;font-weight:800;letter-spacing:-.04em;font-variant-numeric:tabular-nums;line-height:1}
+.time span{color:var(--muted);font-size:.9rem;max-width:150px;margin-top:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ctrl{display:flex;gap:10px;justify-content:center;margin-top:18px}
+button{font:inherit}
+.btn{padding:11px 26px;border-radius:999px;border:1px solid var(--ink);background:transparent;color:var(--ink);cursor:pointer}
+.btn.main{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600;min-width:120px}
+button:focus-visible,input:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+form{display:flex;gap:8px;margin-bottom:14px}
+input[type=text]{flex:1;min-width:0;padding:11px 14px;border-radius:12px;border:1px solid var(--line);background:var(--bg);color:var(--ink);font:inherit}
+ul{list-style:none;margin:0;padding:0}
+li{display:flex;align-items:center;gap:10px;padding:10px 4px;border-bottom:1px solid var(--line)}
+li.active{background:color-mix(in srgb,var(--accent) 22%,transparent);border-radius:10px;padding-left:10px}
+li .t{flex:1;min-width:0;overflow-wrap:anywhere;text-align:left;background:none;border:0;color:inherit;cursor:pointer;padding:2px 0}
+li.done .t{text-decoration:line-through;color:var(--muted)}
+.count{color:var(--muted);font-size:.85rem;white-space:nowrap}
+.x{background:none;border:0;color:var(--muted);cursor:pointer;font-size:1.2rem;padding:4px 8px}
+.empty{color:var(--muted);padding:18px 0;text-align:center}
+.stats{display:flex;justify-content:space-between;color:var(--muted);font-size:.9rem;margin-top:12px}
+@media (prefers-reduced-motion:no-preference){.ring{transition:stroke-dashoffset .9s linear}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+const MODES = { focus: { label: "Focus", mins: 25 }, short: { label: "Short break", mins: 5 }, long: { label: "Long break", mins: 15 } };
+
+function load(key, fallback) {
+  try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; } catch (e) { return fallback; }
+}
+function save(key, val) { try { localStorage.setItem(key, JSON.stringify(val)); } catch (e) {} }
+const fmt = s => String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
+
+function App() {
+  const [mode, setMode] = useState("focus");
+  const [left, setLeft] = useState(MODES.focus.mins * 60);
+  const [running, setRunning] = useState(false);
+  const [tasks, setTasks] = useState(() => load("dial-tasks", []));
+  const [activeId, setActiveId] = useState(null);
+  const [text, setText] = useState("");
+  const [sessions, setSessions] = useState(() => load("dial-sessions", 0));
+  const endRef = useRef(0);
+
+  useEffect(() => save("dial-tasks", tasks), [tasks]);
+  useEffect(() => save("dial-sessions", sessions), [sessions]);
+
+  useEffect(() => {
+    if (!running) return;
+    endRef.current = Date.now() + left * 1000;
+    const id = setInterval(() => {
+      const rem = Math.max(0, Math.round((endRef.current - Date.now()) / 1000));
+      setLeft(rem);
+      if (rem === 0) { clearInterval(id); finish(); }
+    }, 250);
+    return () => clearInterval(id);
+  }, [running]);
+
+  useEffect(() => { document.title = running ? fmt(left) + " — Dial" : "Dial — focus timer and task list"; }, [left, running]);
+
+  function finish() {
+    setRunning(false);
+    if (mode === "focus") {
+      setSessions(n => n + 1);
+      if (activeId) setTasks(ts => ts.map(t => t.id === activeId ? { ...t, sessions: t.sessions + 1 } : t));
+    }
+  }
+  function pick(m) { setMode(m); setRunning(false); setLeft(MODES[m].mins * 60); }
+  function reset() { setRunning(false); setLeft(MODES[mode].mins * 60); }
+  function add(e) {
+    e.preventDefault();
+    const v = text.trim(); if (!v) return;
+    const t = { id: Date.now(), title: v, done: false, sessions: 0 };
+    setTasks([...tasks, t]); setText("");
+    if (!activeId) setActiveId(t.id);
+  }
+  const toggle = id => setTasks(tasks.map(t => t.id === id ? { ...t, done: !t.done } : t));
+  const remove = id => { setTasks(tasks.filter(t => t.id !== id)); if (activeId === id) setActiveId(null); };
+
+  const total = MODES[mode].mins * 60, R = 120, C = 2 * Math.PI * R;
+  const active = tasks.find(t => t.id === activeId);
+  const open = tasks.filter(t => !t.done).length;
+
+  return (
+    <main>
+      <section className="panel" aria-label="Timer">
+        <h1>Dial</h1>
+        <p className="sub">One task, one timer.</p>
+        <div className="modes" role="group" aria-label="Timer mode">
+          {Object.entries(MODES).map(([k, m]) => (
+            <button key={k} aria-pressed={mode === k} onClick={() => pick(k)}>{m.label}</button>
+          ))}
+        </div>
+        <div className="dial">
+          <svg viewBox="0 0 300 300" aria-hidden="true">
+            <circle cx="150" cy="150" r={R} fill="none" stroke="var(--line)" strokeWidth="14" />
+            <circle className="ring" cx="150" cy="150" r={R} fill="none" stroke="var(--accent)" strokeWidth="14"
+              strokeLinecap="round" strokeDasharray={C} strokeDashoffset={C * (1 - left / total)}
+              transform="rotate(-90 150 150)" />
+          </svg>
+          <div className="time" role="timer" aria-live="off">
+            <b>{fmt(left)}</b>
+            <span>{mode === "focus" ? (active ? active.title : "No task selected") : "Take a break"}</span>
+          </div>
+        </div>
+        <div className="ctrl">
+          <button className="btn main" onClick={() => setRunning(!running)}>{running ? "Pause" : left === 0 ? "Restart" : "Start"}</button>
+          <button className="btn" onClick={reset}>Reset</button>
+        </div>
+        <div className="stats"><span>Focus sessions today</span><b>{sessions}</b></div>
+      </section>
+
+      <section className="panel" aria-label="Tasks">
+        <h1 style={{ fontSize: "1.25rem" }}>Tasks <span className="count">({open} open)</span></h1>
+        <p className="sub">Tap a task to work on it.</p>
+        <form onSubmit={add}>
+          <input type="text" value={text} onChange={e => setText(e.target.value)} placeholder="What are you working on?" aria-label="New task" />
+          <button className="btn main" type="submit" style={{ minWidth: 0, padding: "11px 18px" }}>Add task</button>
+        </form>
+        {tasks.length === 0 ? <p className="empty">No tasks yet. Add one to start your first session.</p> : (
+          <ul>
+            {tasks.map(t => (
+              <li key={t.id} className={(t.id === activeId ? "active " : "") + (t.done ? "done" : "")}>
+                <input type="checkbox" checked={t.done} onChange={() => toggle(t.id)} aria-label={"Mark " + t.title + " done"} />
+                <button className="t" onClick={() => setActiveId(t.id)} aria-pressed={t.id === activeId}>{t.title}</button>
+                <span className="count">{t.sessions} {t.sessions === 1 ? "session" : "sessions"}</span>
+                <button className="x" onClick={() => remove(t.id)} aria-label={"Delete " + t.title}>×</button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+    </main>
+  );
+}
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
